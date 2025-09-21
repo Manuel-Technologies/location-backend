@@ -1,58 +1,67 @@
-require('dotenv').config();
-const express = require('express');
-const fs = require('fs');
-const http = require('http');
-const cors = require('cors');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const { Server } = require('socket.io');
+import dotenv from "dotenv";
+import express from "express";
+import cors from "cors";
+import fs from "fs";
+import http from "http";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { Server } from "socket.io";
+
+dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: process.env.CORS_ORIGIN || "*" } });
 
-// Load environment variables
+// ====== ENV CONFIG ======
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const JWT_SECRET = process.env.JWT_SECRET || "change-this-secret";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
-const USERS_FILE = './users.json';
+const USERS_FILE = "./users.json";
 
-// Setup middleware
-app.use(cors({ origin: CORS_ORIGIN }));
-app.use(express.json());
-
-// Load users data from file
+// ====== STATE ======
 let users = [];
-if (fs.existsSync(USERS_FILE)) {
-  users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+let liveLocations = {}; // { userId: { lat, lng, lastUpdated } }
+
+// ====== UTILS ======
+function loadUsers() {
+  if (fs.existsSync(USERS_FILE)) {
+    try {
+      users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
+    } catch (e) {
+      console.error("❌ Failed to parse users.json. Resetting file.");
+      users = [];
+      saveUsers();
+    }
+  }
 }
 
-// Helper: Save users to file
 function saveUsers() {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
-// 🔑 Generate JWT token
 function generateToken(user) {
   return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
-// Middleware to protect routes
 function authMiddleware(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token provided' });
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Authorization token missing" });
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+    req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-// ✅ Health check route
-app.get('/api/health', (req, res) => {
+// ====== MIDDLEWARE ======
+app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
+app.use(express.json());
+
+// ====== ROUTES ======
+app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     uptime: process.uptime(),
@@ -61,82 +70,84 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ✅ Register route
-app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "Username and password required" });
+app.post("/api/register", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: "Username and password required" });
 
-  if (users.find(u => u.username === username)) {
-    return res.status(409).json({ error: "User already exists" });
+    if (users.find((u) => u.username === username)) {
+      return res.status(409).json({ error: "User already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const newUser = { id: Date.now().toString(), username, password: hashedPassword };
+
+    users.push(newUser);
+    saveUsers();
+
+    res.status(201).json({ message: "User registered successfully", token: generateToken(newUser) });
+  } catch (err) {
+    console.error("❌ Registration error:", err);
+    res.status(500).json({ error: "Registration failed" });
   }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const newUser = { id: Date.now().toString(), username, password: hashedPassword };
-  users.push(newUser);
-  saveUsers();
-
-  res.status(201).json({ message: "User registered", token: generateToken(newUser) });
 });
 
-// ✅ Login route
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "Username and password required" });
+app.post("/api/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: "Username and password required" });
 
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    const user = users.find((u) => u.username === username);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.status(401).json({ error: "Invalid credentials" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ error: "Invalid credentials" });
 
-  res.json({ message: "Login successful", token: generateToken(user) });
+    res.json({ message: "Login successful", token: generateToken(user) });
+  } catch (err) {
+    console.error("❌ Login error:", err);
+    res.status(500).json({ error: "Login failed" });
+  }
 });
 
-// ✅ Protected route example
-app.get('/api/me', authMiddleware, (req, res) => {
-  const user = users.find(u => u.id === req.user.id);
+app.get("/api/me", authMiddleware, (req, res) => {
+  const user = users.find((u) => u.id === req.user.id);
   if (!user) return res.status(404).json({ error: "User not found" });
 
   res.json({ id: user.id, username: user.username });
 });
 
-// ✅ Setup Socket.IO for realtime location sharing
-const io = new Server(server, { cors: { origin: CORS_ORIGIN } });
-
-let liveLocations = {}; // { userId: { lat, lng, lastUpdated } }
-
-io.on('connection', (socket) => {
+// ====== SOCKET.IO ======
+io.on("connection", (socket) => {
   console.log(`🔗 Client connected: ${socket.id}`);
 
-  // Handle user joining with token
-  socket.on('join', (token) => {
+  socket.on("join", (token) => {
     try {
       const user = jwt.verify(token, JWT_SECRET);
       socket.user = user;
       liveLocations[user.id] = { lat: null, lng: null, lastUpdated: null };
       console.log(`✅ ${user.username} joined`);
+      io.emit("locations", liveLocations);
     } catch {
-      socket.emit('error', { error: "Invalid token" });
+      socket.emit("error", { error: "Invalid token" });
     }
   });
 
-  // Handle location updates
-  socket.on('locationUpdate', (data) => {
+  socket.on("locationUpdate", (data) => {
     if (!socket.user) return;
     liveLocations[socket.user.id] = { ...data, lastUpdated: Date.now() };
-    io.emit('locations', liveLocations);
+    io.emit("locations", liveLocations);
   });
 
-  socket.on('disconnect', () => {
+  socket.on("disconnect", () => {
     if (socket.user) {
       delete liveLocations[socket.user.id];
-      io.emit('locations', liveLocations);
+      io.emit("locations", liveLocations);
       console.log(`❌ ${socket.user.username} disconnected`);
     }
   });
 });
 
-// Start server
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+// ====== SERVER START ======
+loadUsers();
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
