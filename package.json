@@ -1,23 +1,22 @@
 {
-  "name": "location-backend-simple",
+  "name": "realtime-location-api",
   "version": "1.0.0",
-  "description": "Minimal, robust realtime location backend - single-folder",
+  "description": "Robust Express + Socket.IO backend with JWT authentication and realtime location sharing",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
-  },
-  "engines": {
-    "node": ">=16"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "express-rate-limit": "^6.8.0",
-    "helmet": "^7.0.0",
+    "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
